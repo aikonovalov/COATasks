@@ -50,7 +50,7 @@ docker build -t service .
 ```
 
 ### Запуск контейнера
-```bash
+```
 docker run -d -p 8080:8080 service
 ```
 
