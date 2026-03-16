@@ -1,0 +1,30 @@
+version: '3.8'
+
+services: 
+  web:    
+    image: nginx:latest   
+    ports:     
+      - "80:80"   
+    networks:      
+      - frontend    
+    volumes:      
+      - shared-volume:/usr/share/nginx/html
+    depends_on:
+      - app
+
+  app:   
+    image: node:14   
+    working_dir: /app  
+    command: node server.js
+    networks:     
+      - frontend    
+    volumes:      
+      - shared-volume:/app/data
+
+  db:         
+    image: postgres:13        
+    environment:             
+        - POSTGRES_USER=user            
+        - POSTGRES_PASSWORD=pass        
+    volumes:           
+        - db_data:/var/lib/postgresql/data
