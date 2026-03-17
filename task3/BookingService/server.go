@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	api "github.com/artyomkonovalov/task3/BookingService/api"
@@ -62,6 +63,11 @@ func (s *BookingServer) GetFlights(w http.ResponseWriter, r *http.Request, param
 
 	flights, err := s.flightClient.SearchFlights(r.Context(), req)
 	if err != nil {
+		if status.Code(err) == codes.Unavailable {
+			http.Error(w, "Flight service unavailable", http.StatusServiceUnavailable)
+			return
+		}
+
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -76,6 +82,11 @@ func (s *BookingServer) GetFlights(w http.ResponseWriter, r *http.Request, param
 func (s *BookingServer) GetFlightsId(w http.ResponseWriter, r *http.Request, id string) {
 	resp, err := s.flightClient.GetFlight(r.Context(), &pb.GetFlightRequest{Id: id})
 	if err != nil {
+		if status.Code(err) == codes.Unavailable {
+			http.Error(w, "Flight service unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -92,6 +103,10 @@ func (s *BookingServer) PostBookings(w http.ResponseWriter, r *http.Request) {
 
 	flightResp, err := s.flightClient.GetFlight(r.Context(), &pb.GetFlightRequest{Id: req.FlightId})
 	if err != nil {
+		if status.Code(err) == codes.Unavailable {
+			http.Error(w, "Flight service unavailable", http.StatusServiceUnavailable)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -127,6 +142,12 @@ func (s *BookingServer) PostBookings(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": "not enough seats available"})
 			return
 		}
+
+		if status.Code(err) == codes.Unavailable {
+			http.Error(w, "Flight service unavailable", http.StatusServiceUnavailable)
+			return
+		}
+
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -228,8 +249,13 @@ func (s *BookingServer) PostBookingsIdCancel(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-    _, err = s.flightClient.ReleaseReservation(r.Context(), &pb.ReleaseReservationRequest{BookingId: id})
+	_, err = s.flightClient.ReleaseReservation(r.Context(), &pb.ReleaseReservationRequest{BookingId: id})
 	if err != nil {
+		if status.Code(err) == codes.Unavailable {
+			http.Error(w, "Flight service unavailable", http.StatusServiceUnavailable)
+			return
+		}
+
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -278,10 +304,11 @@ func main() {
 		flightServiceURL = "flight-service:8080"
 	}
 
+	circuitBreaker := newCircuitBreaker()
 	conn, err := grpc.NewClient(
 		flightServiceURL,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithChainUnaryInterceptor(retryUnaryInterceptor, clientAuthMiddleware),
+		grpc.WithChainUnaryInterceptor(circuitBreaker.unaryInterceptor, retryUnaryInterceptor, clientAuthMiddleware),
 	)
 	if err != nil {
 		log.Fatalf("failed to connect to flight service: %v", err)
@@ -322,6 +349,111 @@ func clientAuthMiddleware(
 	}
 
 	return invoker(ctx, method, req, reply, cc, opts...)
+}
+
+const (
+	cbStateClosed   = 0
+	cbStateOpen     = 1
+	cbStateHalfOpen = 2
+)
+
+type circuitBreaker struct {
+	mu            sync.Mutex
+	state         int
+	failures      int
+	openUntil     time.Time
+	threshold     int
+	openDuration  time.Duration
+}
+
+func newCircuitBreaker() *circuitBreaker {
+	threshold := 5
+	if s := os.Getenv("CIRCUIT_BREAKER_THRESHOLD"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			threshold = n
+		}
+	}
+
+	openDuration := 30 * time.Second
+	if s := os.Getenv("CIRCUIT_BREAKER_OPEN_DURATION"); s != "" {
+		if d, err := time.ParseDuration(s); err == nil && d > 0 {
+			openDuration = d
+		}
+	}
+
+	return &circuitBreaker{threshold: threshold, openDuration: openDuration}
+}
+
+func (cb *circuitBreaker) unaryInterceptor(
+	ctx context.Context,
+	method string,
+	req, reply interface{},
+	cc *grpc.ClientConn,
+	invoker grpc.UnaryInvoker,
+	opts ...grpc.CallOption,
+) error {
+	cb.mu.Lock()
+	state := cb.state
+	openUntil := cb.openUntil
+	cb.mu.Unlock()
+
+	now := time.Now()
+
+	if state == cbStateOpen {
+		if now.Before(openUntil) {
+			return status.Error(codes.Unavailable, "circuit breaker open")
+		}
+
+		cb.mu.Lock()
+		cb.state = cbStateHalfOpen
+		cb.mu.Unlock()
+
+		log.Printf("Circuit breaker: OPEN to HALF_OPEN")
+		state = cbStateHalfOpen
+	}
+
+	if state == cbStateHalfOpen {
+		err := invoker(ctx, method, req, reply, cc, opts...)
+		cb.mu.Lock()
+		defer cb.mu.Unlock()
+
+		if err != nil {
+			cb.state = cbStateOpen
+			cb.openUntil = time.Now().Add(cb.openDuration)
+			log.Printf("Circuit breaker: HALF_OPEN to OPEN")
+			return err
+		}
+
+		cb.state = cbStateClosed
+		cb.failures = 0
+
+		log.Printf("Circuit breaker: HALF_OPEN to CLOSED")
+		return nil
+	}
+
+	err := invoker(ctx, method, req, reply, cc, opts...)
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+
+	if err != nil {
+		code := status.Code(err)
+
+		if code == codes.Unavailable || code == codes.DeadlineExceeded {
+			cb.failures++
+
+			if cb.failures >= cb.threshold {
+				cb.state = cbStateOpen
+				cb.openUntil = time.Now().Add(cb.openDuration)
+
+				log.Printf("Circuit breaker: CLOSED -> OPEN (failures num = %d)", cb.failures)
+			}
+		}
+
+		return err
+	}
+
+	cb.failures = 0
+	return nil
 }
 
 const (

@@ -108,6 +108,8 @@ services:
       DB_USER: booking_user
       DB_PASSWORD: booking_pass
       FLIGHT_API_KEY: flight-api-key
+      CIRCUIT_BREAKER_THRESHOLD: "5"
+      CIRCUIT_BREAKER_OPEN_DURATION: 10s
     depends_on:
       booking-migrations:
         condition: service_completed_successfully
