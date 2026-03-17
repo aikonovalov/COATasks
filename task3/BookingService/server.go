@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"flag"
@@ -20,6 +21,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -239,13 +241,13 @@ func (s *BookingServer) PostBookingsIdCancel(w http.ResponseWriter, r *http.Requ
 
 
 func main() {
-	log.Println("Starting Booking Service...")
+	log.Printf("Start BookingService")
 	
 	var port string
 	flag.StringVar(&port, "port", "8080", "port to listen on")
 	flag.Parse()
 
-	log.Println("Connecting to database...")
+	log.Printf("Connect to database")
 	dbHost := os.Getenv("DB_HOST")
 	dbPort := os.Getenv("DB_PORT")
 	dbName := os.Getenv("DB_NAME")
@@ -275,13 +277,16 @@ func main() {
 	if flightServiceURL == "" {
 		flightServiceURL = "flight-service:8080"
 	}
-	
-	log.Printf("Connect to Flight Service at %s", flightServiceURL)
 
-	conn, err := grpc.NewClient(flightServiceURL, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(
+		flightServiceURL,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithUnaryInterceptor(clientAuthMiddleware),
+	)
 	if err != nil {
 		log.Fatalf("failed to connect to flight service: %v", err)
 	}
+	log.Printf("Conn to FlightService %s", flightServiceURL)
 	defer conn.Close()
 	
 	flightClient := pb.NewFlightServiceClient(conn)
@@ -290,8 +295,31 @@ func main() {
 
 	api.HandlerFromMux(server, r)
 
-	log.Printf("Server listening on :%s", port)
+	log.Printf("Listen on port %s", port)
 	if err := http.ListenAndServe(":"+port, r); err != nil {
 		log.Fatalf("failed to serve: %v", err)
 	}
+}
+
+func clientAuthMiddleware(
+	ctx context.Context,
+	method string,
+	req, reply interface{},
+	cc *grpc.ClientConn,
+	invoker grpc.UnaryInvoker,
+	opts ...grpc.CallOption,
+) error {
+	apiKey := os.Getenv("FLIGHT_API_KEY")
+	if apiKey != "" {
+		md, ok := metadata.FromOutgoingContext(ctx)
+		if !ok {
+			md = metadata.New(nil)
+		} else {
+			md = md.Copy()
+		}
+		md.Set("flight-api-key", apiKey)
+		ctx = metadata.NewOutgoingContext(ctx, md)
+	}
+
+	return invoker(ctx, method, req, reply, cc, opts...)
 }

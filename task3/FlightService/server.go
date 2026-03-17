@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -12,6 +13,7 @@ import (
 
 	pb "github.com/artyomkonovalov/task3/gen"
 	_ "github.com/lib/pq"
+	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -21,12 +23,30 @@ import (
 
 type FlightServiceServer struct {
 	pb.UnimplementedFlightServiceServer
-    db *sql.DB
+    db    *sql.DB
+	redis *redis.Client
 }
 
 func (s *FlightServiceServer) SearchFlights(ctx context.Context, req *pb.SearchFlightsRequest) (*pb.SearchFlightsResponse, error) {
 	if req.GetRoute() == nil {
 		return nil, status.Errorf(codes.InvalidArgument, "route is required")
+	}
+
+	var cacheKey string
+	if s.redis != nil {
+		datePart := "any"
+		if req.GetDepartureDate() != nil {
+			dd := req.DepartureDate.AsTime()
+			datePart = dd.Format("2006-01-02")
+		}
+		cacheKey = fmt.Sprintf("search:%s:%s:%s", req.Route.Origin, req.Route.Destination, datePart)
+		if data, err := s.redis.Get(ctx, cacheKey).Bytes(); err == nil {
+			var cached []*pb.Flight
+			if err := json.Unmarshal(data, &cached); err == nil {
+				log.Printf("SearchFlights via redis")
+				return &pb.SearchFlightsResponse{Flights: cached}, nil
+			}
+		}
 	}
 
 	var rows *sql.Rows
@@ -84,12 +104,28 @@ func (s *FlightServiceServer) SearchFlights(ctx context.Context, req *pb.SearchF
 		flights = append(flights, &flight)
 	}
 
-	return &pb.SearchFlightsResponse{
-		Flights: flights,
-	}, nil
+	if s.redis != nil && cacheKey != "" {
+		if data, err := json.Marshal(flights); err == nil {
+			_ = s.redis.Set(ctx, cacheKey, data, 5*time.Minute).Err()
+		}
+	}
+
+	return &pb.SearchFlightsResponse{Flights: flights}, nil
 }
 
 func (s *FlightServiceServer) GetFlight(ctx context.Context, req *pb.GetFlightRequest) (*pb.GetFlightResponse, error) {
+	cacheKey := ""
+	if s.redis != nil {
+		cacheKey = fmt.Sprintf("flight:%s", req.Id)
+		if data, err := s.redis.Get(ctx, cacheKey).Bytes(); err == nil {
+			var f pb.Flight
+			if err := json.Unmarshal(data, &f); err == nil {
+				log.Printf("GetFlight via redis")
+				return &pb.GetFlightResponse{Flight: &f}, nil
+			}
+		}
+	}
+
     rows, err := s.db.QueryContext(ctx, "SELECT id, airline, flight_number, origin, destination, departure_time, arrival_time, total_seats, available_seats, price, status FROM flights WHERE id = $1", req.Id)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "GOOOOOL %v", err)
@@ -122,9 +158,13 @@ func (s *FlightServiceServer) GetFlight(ctx context.Context, req *pb.GetFlightRe
 			flight.Status = pb.FlightStatus_FLIGHT_STATUS_UNSPECIFIED
 		}
 
-		return &pb.GetFlightResponse{
-			Flight: &flight,
-		}, nil
+		if s.redis != nil && cacheKey != "" {
+			if data, err := json.Marshal(&flight); err == nil {
+				_ = s.redis.Set(ctx, cacheKey, data, 5*time.Minute).Err()
+			}
+		}
+
+		return &pb.GetFlightResponse{Flight: &flight}, nil
 	}
 
 	return nil, status.Errorf(codes.NotFound, "flight not found")
@@ -173,6 +213,11 @@ func (s *FlightServiceServer) ReserveSeats(ctx context.Context, req *pb.ReserveS
 		return nil, status.Errorf(codes.Internal, "failed to commit tx: %v", err)
 	}
 
+	if s.redis != nil {
+		_ = s.redis.Del(ctx, fmt.Sprintf("flight:%s", req.FlightId)).Err()
+		_ = s.redis.FlushDB(ctx).Err()
+	}
+
 	return &pb.ReserveSeatsResponse{
 		Reservation: &pb.SeatReservation{
 			ReservationId: req.BookingId,
@@ -215,6 +260,11 @@ func (s *FlightServiceServer) ReleaseReservation(ctx context.Context, req *pb.Re
 		return nil, status.Errorf(codes.Internal, "failed to commit tx: %v", err)
 	}
 
+	if s.redis != nil {
+		_ = s.redis.Del(ctx, fmt.Sprintf("flight:%s", flightID)).Err()
+		_ = s.redis.FlushDB(ctx).Err()
+	}
+
 	return &pb.ReleaseReservationResponse{
 		Status: pb.SeatReservationStatus_RELEASED,
 	}, nil
@@ -245,6 +295,18 @@ func main() {
 	}
 	log.Println("Connected to database succfly")
 
+	var rdb *redis.Client
+	redisAddr := os.Getenv("REDIS_ADDR")
+	if redisAddr != "" {
+		rdb = redis.NewClient(&redis.Options{Addr: redisAddr})
+		if err := rdb.Ping(context.Background()).Err(); err != nil {
+			log.Printf("Redis disabled: %v", err)
+			rdb = nil
+		} else {
+			log.Printf("Connected to Redis at %s", redisAddr)
+		}
+	}
+
 	lis, err := net.Listen("tcp", ":" + port)
 	if err != nil {
 		log.Fatalf("failed to listen: %v", err)
@@ -255,7 +317,8 @@ func main() {
 	)
 
 	flight_service_server := &FlightServiceServer{
-		db: db,
+		db:    db,
+		redis: rdb,
 	}
 
 	pb.RegisterFlightServiceServer(grpc_server, flight_service_server)
