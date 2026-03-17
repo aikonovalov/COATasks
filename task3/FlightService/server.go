@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strings"
 	"time"
 
 	pb "github.com/artyomkonovalov/task3/gen"
@@ -300,12 +301,34 @@ func main() {
 	log.Println("Connected to database succfly")
 
 	var rdb *redis.Client
-	redisAddr := os.Getenv("REDIS_ADDR")
-	if redisAddr != "" {
+	masterName := os.Getenv("REDIS_MASTER_NAME")
+	sentinelAddrs := os.Getenv("REDIS_SENTINEL_ADDRS")
+	if masterName != "" && sentinelAddrs != "" {
+		addrs := strings.Split(strings.TrimSpace(sentinelAddrs), ",")
+		for i := range addrs {
+			addrs[i] = strings.TrimSpace(addrs[i])
+		}
+
+		rdb = redis.NewFailoverClient(&redis.FailoverOptions{
+			MasterName:    masterName,
+			SentinelAddrs: addrs,
+		})
+
+		if err := rdb.Ping(context.Background()).Err(); err != nil {
+			log.Printf("Redis (Sentinel) disabled: %v", err)
+			rdb = nil
+
+		} else {
+			log.Printf("Connected to Redis via Sentinel (master=%s)", masterName)
+		}
+
+	} else if redisAddr := os.Getenv("REDIS_ADDR"); redisAddr != "" {
 		rdb = redis.NewClient(&redis.Options{Addr: redisAddr})
+
 		if err := rdb.Ping(context.Background()).Err(); err != nil {
 			log.Printf("Redis disabled: %v", err)
 			rdb = nil
+
 		} else {
 			log.Printf("Connected to Redis at %s", redisAddr)
 		}

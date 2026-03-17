@@ -1,4 +1,13 @@
-services: 
+networks:
+  default:
+    driver: bridge
+  redis-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+services:
   proto-gen:
     image: "namely/protoc-all:latest"
     volumes:
@@ -40,6 +49,9 @@ services:
       dockerfile: FlightService/DockerFile
     ports:
       - "8080:8080"
+    networks:
+      - default
+      - redis-net
     environment:
       DB_HOST: flight-db
       DB_PORT: 5432
@@ -47,12 +59,13 @@ services:
       DB_USER: flight_user
       DB_PASSWORD: flight_pass
       FLIGHT_API_KEY: flight-api-key
-      REDIS_ADDR: redis:6379
+      REDIS_MASTER_NAME: my_master
+      REDIS_SENTINEL_ADDRS: redis-sentinel:26379
     depends_on:
       flight-migrations:
         condition: service_completed_successfully
-      redis:
-        condition: service_started
+      redis-sentinel:
+        condition: service_healthy
 
   booking-db:
     image: postgres:15
@@ -99,6 +112,46 @@ services:
       booking-migrations:
         condition: service_completed_successfully
 
-  redis:
+  redis-master:
     image: redis:7-alpine
     restart: unless-stopped
+    command: redis-server
+    ports:
+      - "6379:6379"
+    networks:
+      redis-net:
+        ipv4_address: 172.28.0.2
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+  redis-replica:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --replicaof redis-master 6379
+    networks:
+      - redis-net
+    depends_on:
+      redis-master:
+        condition: service_healthy
+  redis-sentinel:
+    networks:
+      - redis-net
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: sh -c "cp /etc/redis/sentinel.conf /tmp/sentinel.conf && redis-sentinel /tmp/sentinel.conf"
+    volumes:
+      - ./redis/sentinel.conf:/etc/redis/sentinel.conf:ro
+    ports:
+      - "26379:26379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "26379", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    depends_on:
+      redis-master:
+        condition: service_healthy
