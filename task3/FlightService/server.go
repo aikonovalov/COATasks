@@ -49,6 +49,8 @@ func (s *FlightServiceServer) SearchFlights(ctx context.Context, req *pb.SearchF
 		}
 	}
 
+	log.Printf("SearchFlights via db")
+
 	var rows *sql.Rows
 	var err error
 	if req.GetDepartureDate() != nil {
@@ -125,6 +127,8 @@ func (s *FlightServiceServer) GetFlight(ctx context.Context, req *pb.GetFlightRe
 			}
 		}
 	}
+
+	log.Printf("GetFlight via db")
 
     rows, err := s.db.QueryContext(ctx, "SELECT id, airline, flight_number, origin, destination, departure_time, arrival_time, total_seats, available_seats, price, status FROM flights WHERE id = $1", req.Id)
 	if err != nil {

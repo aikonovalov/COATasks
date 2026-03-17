@@ -47,9 +47,12 @@ services:
       DB_USER: flight_user
       DB_PASSWORD: flight_pass
       FLIGHT_API_KEY: flight-api-key
+      REDIS_ADDR: redis:6379
     depends_on:
       flight-migrations:
         condition: service_completed_successfully
+      redis:
+        condition: service_started
 
   booking-db:
     image: postgres:15
@@ -95,3 +98,7 @@ services:
     depends_on:
       booking-migrations:
         condition: service_completed_successfully
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
