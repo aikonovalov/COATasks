@@ -2,25 +2,31 @@ syntax = "proto3";
 
 package flight_service.v1;
 
+option go_package = "github.com/yourname/flightservice/proto";
+
 import "google/protobuf/timestamp.proto";
 
 enum FlightStatus {
-    UNSPECIFIED = 0;
+    FLIGHT_STATUS_UNSPECIFIED = 0;
     SCHEDULED = 1;
-    DEPARTED = 4;
+    DEPARTED = 2;
     CANCELLED = 3;
-    COMPLETED = 5;
+    COMPLETED = 4;
 }
 
 message FlightRoute {
-    string origin = 3;
-    string destination = 4;
+    string origin = 1;
+    string destination = 2;
 }
 
 message Flight {
     string id = 1;
 
-    string flight_number = 2;
+    string airline = 2;
+
+    string flight_number = 3;
+
+    FlightRoute route = 4;
 
     google.protobuf.Timestamp departure_time = 5;
     google.protobuf.Timestamp arrival_time = 6;
@@ -28,28 +34,37 @@ message Flight {
     uint32 total_seats = 7;
     uint32 available_seats = 8;
 
-    uint32 ticket_price = 9;
+    int64 price = 9;
 
     FlightStatus status = 10;
 }
 
 enum SeatReservationStatus {
-    UNSPECIFIED = 0;
+    SEAT_RESERVATION_UNSPECIFIED = 0;
     ACTIVE = 1;
-    CANCELLED = 2;
+    RELEASED = 2;
     EXPIRED = 3;
 }
 
 message SeatReservation {
-    
+    string reservation_id = 1;
+
+    string flight_id = 2;
+
+    uint32 seat_count = 3;
+
+    SeatReservationStatus status = 4;
+
+    google.protobuf.Timestamp expire_ts = 5;
 }
 
 message SearchFlightsRequest {
-    string id;
+    FlightRoute route = 1;
+    google.protobuf.Timestamp departure_date = 2;
 }
 
 message SearchFlightsResponse {
-
+    repeated Flight flights = 1;
 }
 
 message GetFlightRequest {
@@ -57,36 +72,43 @@ message GetFlightRequest {
 }
 
 message GetFlightResponse {
-    Flight data = 1;
+    Flight flight = 1;
 }
 
 message ReserveSeatsRequest {
+    string flight_id = 1;
 
+    uint32 seat_count = 2;
+
+    string booking_id = 3;
 }
 
 message ReserveSeatsResponse {
-
+    SeatReservation reservation = 1;
 }
 
 message ReleaseReservationRequest {
-
+    string booking_id = 1;
 }
 
 message ReleaseReservationResponse {
-
+    SeatReservationStatus status = 1;
 }
 
 service FlightService {
-
+    // Errs: InvalidArgument
     rpc SearchFlights(SearchFlightsRequest)
         returns (SearchFlightsResponse);
 
+    // Errs: NotFound
     rpc GetFlight(GetFlightRequest)
         returns (GetFlightResponse);
 
+    // Errs: NotFound, ResourseExhausted
     rpc ReserveSeats(ReserveSeatsRequest)
         returns (ReserveSeatsResponse);
 
+    // Errs: NotFound
     rpc ReleaseReservation(ReleaseReservationRequest)
         returns (ReleaseReservationResponse);
 }

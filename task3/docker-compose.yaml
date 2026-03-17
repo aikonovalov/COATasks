@@ -1,30 +1,95 @@
-version: '3.8'
-
 services: 
-  web:    
-    image: nginx:latest   
-    ports:     
-      - "80:80"   
-    networks:      
-      - frontend    
-    volumes:      
-      - shared-volume:/usr/share/nginx/html
+  proto-gen:
+    image: "namely/protoc-all:latest"
+    volumes:
+      - ./proto:/proto
+      - ./gen:/gen
+    command: -d /proto -l go -o /gen --go-source-relative
+
+  flight-db:
+    image: postgres:15
+    environment:
+      - POSTGRES_DB=flight_service
+      - POSTGRES_USER=flight_user
+      - POSTGRES_PASSWORD=flight_pass
+    volumes:
+      - ./FlightService/db_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flight_user -d flight_service"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  flight-migrations:
+    image: flyway/flyway:9
+    command: migrate
+    volumes:
+      - ./FlightService/migrations:/flyway/sql
+    environment:
+      FLYWAY_URL: jdbc:postgresql://flight-db:5432/flight_service
+      FLYWAY_USER: flight_user
+      FLYWAY_PASSWORD: flight_pass
     depends_on:
-      - app
+      flight-db:
+        condition: service_healthy
 
-  app:   
-    image: node:14   
-    working_dir: /app  
-    command: node server.js
-    networks:     
-      - frontend    
-    volumes:      
-      - shared-volume:/app/data
+  flight-service:
+    build:
+      context: .
+      dockerfile: FlightService/DockerFile
+    ports:
+      - "8080:8080"
+    environment:
+      DB_HOST: flight-db
+      DB_PORT: 5432
+      DB_NAME: flight_service
+      DB_USER: flight_user
+      DB_PASSWORD: flight_pass
+    depends_on:
+      flight-migrations:
+        condition: service_completed_successfully
 
-  db:         
-    image: postgres:13        
-    environment:             
-        - POSTGRES_USER=user            
-        - POSTGRES_PASSWORD=pass        
-    volumes:           
-        - db_data:/var/lib/postgresql/data
+  booking-db:
+    image: postgres:15
+    environment:
+      - POSTGRES_DB=booking_service
+      - POSTGRES_USER=booking_user
+      - POSTGRES_PASSWORD=booking_pass
+    volumes:
+      - ./BookingService/db_data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U booking_user -d booking_service"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  booking-migrations:
+    image: flyway/flyway:9
+    command: migrate
+    volumes:
+      - ./BookingService/migrations:/flyway/sql
+    environment:
+      FLYWAY_URL: jdbc:postgresql://booking-db:5432/booking_service
+      FLYWAY_USER: booking_user
+      FLYWAY_PASSWORD: booking_pass
+    depends_on:
+      booking-db:
+        condition: service_healthy
+
+  booking-service:
+    build:
+      context: .
+      dockerfile: BookingService/DockerFile
+    ports:
+      - "8081:8080"
+    environment:
+      DB_HOST: booking-db
+      DB_PORT: 5432
+      DB_NAME: booking_service
+      DB_USER: booking_user
+      DB_PASSWORD: booking_pass
+    depends_on:
+      booking-migrations:
+        condition: service_completed_successfully
