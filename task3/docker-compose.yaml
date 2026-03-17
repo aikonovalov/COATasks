@@ -46,6 +46,7 @@ services:
       DB_NAME: flight_service
       DB_USER: flight_user
       DB_PASSWORD: flight_pass
+      FLIGHT_API_KEY: flight-api-key
     depends_on:
       flight-migrations:
         condition: service_completed_successfully
@@ -90,6 +91,7 @@ services:
       DB_NAME: booking_service
       DB_USER: booking_user
       DB_PASSWORD: booking_pass
+      FLIGHT_API_KEY: flight-api-key
     depends_on:
       booking-migrations:
         condition: service_completed_successfully

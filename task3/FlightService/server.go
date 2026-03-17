@@ -14,6 +14,7 @@ import (
 	_ "github.com/lib/pq"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -130,34 +131,46 @@ func (s *FlightServiceServer) GetFlight(ctx context.Context, req *pb.GetFlightRe
 }
 
 func (s *FlightServiceServer) ReserveSeats(ctx context.Context, req *pb.ReserveSeatsRequest) (*pb.ReserveSeatsResponse, error) {
-    rows, err := s.db.QueryContext(ctx, "SELECT * FROM seat_reservations WHERE flight_id = $1 AND booking_id = $2", req.FlightId, req.BookingId)
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{})
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "failed to reserve seats: %v", err)
+		return nil, status.Errorf(codes.Internal, "failed to start tx: %v", err)
 	}
-	defer rows.Close()
+	defer tx.Rollback()
 
-	if rows.Next() {
+	var is_exists bool
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM seat_reservations WHERE booking_id = $1 AND status = 'ACTIVE')", req.BookingId).Scan(&is_exists); err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to check existing reservation: %v", err)
+	}
+	if is_exists {
 		return nil, status.Errorf(codes.AlreadyExists, "reservation already exists")
 	}
 
-	rows2, err := s.db.QueryContext(ctx, "SELECT * FROM flights WHERE id = $1 AND available_seats >= $2", req.FlightId, req.SeatCount)
+	var available int
+	err = tx.QueryRowContext(ctx, "SELECT available_seats FROM flights WHERE id = $1 FOR UPDATE", req.FlightId).Scan(&available)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to select flight: %v", err)
+		if err == sql.ErrNoRows {
+			return nil, status.Errorf(codes.NotFound, "flight not found")
+		}
+		return nil, status.Errorf(codes.Internal, "failed to lock flight: %v", err)
 	}
-	defer rows2.Close()
 
-	if !rows2.Next() {
+	if available < int(req.SeatCount) {
 		return nil, status.Errorf(codes.ResourceExhausted, "not enough seats available")
 	}
 
-	_, err = s.db.ExecContext(ctx, "UPDATE flights SET available_seats = available_seats - $1 WHERE id = $2", req.SeatCount, req.FlightId)
+	_, err = tx.ExecContext(ctx, "UPDATE flights SET available_seats = available_seats - $1 WHERE id = $2", req.SeatCount, req.FlightId)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to update flight: %v", err)
 	}
 
-	_, err = s.db.ExecContext(ctx, "INSERT INTO seat_reservations (flight_id, booking_id, seat_count, status, expires_at) VALUES ($1, $2, $3, 'ACTIVE', $4)", req.FlightId, req.BookingId, req.SeatCount, time.Now().Add(1 * time.Hour))
+	expiresAt := time.Now().Add(1 * time.Hour)
+	_, err = tx.ExecContext(ctx, "INSERT INTO seat_reservations (flight_id, booking_id, seat_count, status, expires_at) VALUES ($1, $2, $3, 'ACTIVE', $4)", req.FlightId, req.BookingId, req.SeatCount, expiresAt)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to insert reservation: %v", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to commit tx: %v", err)
 	}
 
 	return &pb.ReserveSeatsResponse{
@@ -166,38 +179,40 @@ func (s *FlightServiceServer) ReserveSeats(ctx context.Context, req *pb.ReserveS
 			FlightId: req.FlightId,
 			SeatCount: req.SeatCount,
 			Status: pb.SeatReservationStatus_ACTIVE,
-			ExpireTs: timestamppb.New(time.Now().Add(1 * time.Hour)),
+			ExpireTs: timestamppb.New(expiresAt),
 		},
 	}, nil
 }
 
 func (s *FlightServiceServer) ReleaseReservation(ctx context.Context, req *pb.ReleaseReservationRequest) (*pb.ReleaseReservationResponse, error) {
-    rows, err := s.db.QueryContext(ctx, "SELECT flight_id, seat_count FROM seat_reservations WHERE booking_id = $1", req.BookingId)
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{})
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "failed to release reservation: %v", err)
+		return nil, status.Errorf(codes.Internal, "failed to start tx: %v", err)
 	}
-	defer rows.Close()
+	defer tx.Rollback()
 
-	var flightId int
-	var availableSeats uint32
-	
-	if !rows.Next() {
-		return nil, status.Errorf(codes.NotFound, "reservation not found")
-	}
-
-	err = rows.Scan(&flightId, &availableSeats)
+	var flightID string
+	var seatCount int
+	err = tx.QueryRowContext(ctx, "SELECT flight_id, seat_count FROM seat_reservations WHERE booking_id = $1 AND status = 'ACTIVE' FOR UPDATE", req.BookingId).Scan(&flightID, &seatCount)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to scan reservation: %v", err)
+		if err == sql.ErrNoRows {
+			return nil, status.Errorf(codes.NotFound, "reservation not found")
+		}
+		return nil, status.Errorf(codes.Internal, "failed to select reservation: %v", err)
 	}
 
-	_, err = s.db.ExecContext(ctx, "UPDATE seat_reservations SET status = $1 WHERE booking_id = $2", pb.SeatReservationStatus_RELEASED, req.BookingId)
+	_, err = tx.ExecContext(ctx, "UPDATE seat_reservations SET status = 'RELEASED' WHERE booking_id = $1", req.BookingId)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to update reservation: %v", err)
 	}
 
-	_, err = s.db.ExecContext(ctx, "UPDATE flights SET available_seats = available_seats + $1 WHERE id = $2", availableSeats, flightId)
+	_, err = tx.ExecContext(ctx, "UPDATE flights SET available_seats = available_seats + $1 WHERE id = $2", seatCount, flightID)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to update flight: %v", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to commit tx: %v", err)
 	}
 
 	return &pb.ReleaseReservationResponse{
@@ -235,7 +250,9 @@ func main() {
 		log.Fatalf("failed to listen: %v", err)
 	}
 
-	grpc_server := grpc.NewServer()
+	grpc_server := grpc.NewServer(
+		grpc.UnaryInterceptor(authMiddleware),
+	)
 
 	flight_service_server := &FlightServiceServer{
 		db: db,
@@ -247,4 +264,27 @@ func main() {
 	if err := grpc_server.Serve(lis); err != nil {
 		log.Fatalf("failed to serve: %v", err)
 	}
+}
+
+func authMiddleware(
+	ctx context.Context,
+	req interface{},
+	_ *grpc.UnaryServerInfo,
+	handler grpc.UnaryHandler,
+) (interface{}, error) {
+	expected := os.Getenv("FLIGHT_API_KEY")
+	if expected == "" {
+		return handler(ctx, req)
+	}
+
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return nil, status.Error(codes.Unauthenticated, "missing metadata")
+	}
+	values := md["flight-api-key"]
+	if len(values) == 0 || values[0] != expected {
+		return nil, status.Error(codes.Unauthenticated, "invalid api key")
+	}
+
+	return handler(ctx, req)
 }

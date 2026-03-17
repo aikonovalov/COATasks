@@ -4,7 +4,7 @@ CREATE TABLE bookings (
     flight_id VARCHAR(100) NOT NULL,
 
     passenger_name VARCHAR(100) NOT NULL,
-    passenger_email VARCHAR(100) NOT NULL UNIQUE,
+    passenger_email VARCHAR(100) NOT NULL,
 
     seats INT NOT NULL CHECK (seats > 0),
     total_price BIGINT NOT NULL CHECK (total_price > 0),
