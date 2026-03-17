@@ -281,7 +281,7 @@ func main() {
 	conn, err := grpc.NewClient(
 		flightServiceURL,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithUnaryInterceptor(clientAuthMiddleware),
+		grpc.WithChainUnaryInterceptor(retryUnaryInterceptor, clientAuthMiddleware),
 	)
 	if err != nil {
 		log.Fatalf("failed to connect to flight service: %v", err)
@@ -322,4 +322,47 @@ func clientAuthMiddleware(
 	}
 
 	return invoker(ctx, method, req, reply, cc, opts...)
+}
+
+const (
+	retryMaxAttempts = 3
+	retryInitDelay   = 100 * time.Millisecond
+)
+
+func retryUnaryInterceptor(
+	ctx context.Context,
+	method string,
+	req, reply interface{},
+	cc *grpc.ClientConn,
+	invoker grpc.UnaryInvoker,
+	opts ...grpc.CallOption,
+) error {
+	var lastErr error
+
+	for curr_attempt := 0; curr_attempt < retryMaxAttempts; curr_attempt++ {
+		lastErr = invoker(ctx, method, req, reply, cc, opts...)
+		if lastErr == nil {
+			return nil
+		}
+
+		code := status.Code(lastErr)
+		if code != codes.Unavailable && code != codes.DeadlineExceeded {
+			return lastErr
+		}
+
+		if curr_attempt == retryMaxAttempts - 1 {
+			return lastErr
+		}
+
+		delay := retryInitDelay * (1 << curr_attempt)
+
+		log.Printf("Flight Service echo failed %d of %d", curr_attempt + 1, retryMaxAttempts)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+
+	return lastErr
 }
