@@ -1,6 +1,0 @@
-package: api
-output: api/api.gen.go
-generate:
-  models: true
-  chi-server: true
-  client: false
