@@ -1,0 +1,211 @@
+openapi: 3.0.3
+info:
+  title: "Ticket Service"
+  description: “Description of the purpose of your service”
+  version: "1.0.0"
+  contact:
+    name: Ванька Петров
+    email: user@gmail.com
+servers:
+  - url: http://localhost:8081
+components:
+  schemas:
+    Flight:
+      type: object
+      properties:
+        id:
+          type: string
+        airline:
+          type: string
+        flight_number:
+          type: string
+        route:
+          type: object
+          properties:
+            origin:
+              type: string
+            destination:
+              type: string
+        departure_time:
+          type: string
+        arrival_time:
+          type: string
+        total_seats:
+          type: integer
+        available_seats:
+          type: integer
+        price:
+          type: integer
+          format: int64
+        status:
+          type: string
+
+    Booking:
+      type: object
+      properties:
+        id:
+          type: string
+        flight_id:
+          type: string
+        passenger_name:
+          type: string
+        passenger_email:
+          type: string
+        seat_count:
+          type: integer
+        total_price:
+          type: integer
+          format: int64
+        status:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    CreateBookingRequest:
+      type: object
+      required:
+        - flight_id
+        - passenger_name
+        - passenger_email
+        - seat_count
+      properties:
+        flight_id:
+          type: string
+          example: "1"
+        passenger_name:
+          type: string
+        passenger_email:
+          type: string
+          format: email
+        seat_count:
+          type: integer
+          minimum: 1
+
+paths:
+  /flights:
+    get:
+      summary: Get all flights
+      parameters:
+        - name: origin
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: destination
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: date
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+      responses:
+        200:
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Flight'
+
+  /flights/{id}:
+    get:
+      summary: Get flight by id
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Flight'
+        404:
+          description: Not Found
+
+  /bookings:
+    get:
+      summary: Get all bookings
+      parameters:
+        - name: passenger_email
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Booking'
+  
+    post:
+      summary: Create booking
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBookingRequest'
+            example:
+              flight_id: "1"
+              passenger_name: "John Doe"
+              passenger_email: "johndoe@example.com"
+              seat_count: 2
+      responses:
+        200:
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Booking'
+
+  /bookings/{id}:
+    get:
+      summary: Get booking by id
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Booking'
+        404:
+          description: Not Found
+  
+  /bookings/{id}/cancel:
+    post:
+      summary: Cancel booking
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Booking'
+        404:
+          description: Not Found

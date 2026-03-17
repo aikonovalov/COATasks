@@ -5,7 +5,7 @@ erDiagram
         int flight_id "Ext id"
 
         string passenger_name
-        string passenger_email
+        string passenger_email "UNIQUE"
 
         int seats "> 0"
         bigint total_price "> 0"

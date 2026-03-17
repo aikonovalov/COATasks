@@ -8,7 +8,7 @@ COPY FlightService/ ./FlightService/
 RUN go mod download
 RUN go build -o flight-service ./FlightService
 
-FROM alpine:3.20
+FROM alpine
 RUN apk --no-cache add ca-certificates
 WORKDIR /root/
 COPY --from=builder /app/flight-service .

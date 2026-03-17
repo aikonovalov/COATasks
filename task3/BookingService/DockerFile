@@ -1,0 +1,21 @@
+FROM golang:1.24-alpine AS builder
+WORKDIR /app
+
+RUN go install github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@latest
+COPY go.mod go.sum ./
+RUN go mod download
+COPY gen/ ./gen/
+COPY BookingService/openapi/ ./BookingService/openapi/
+RUN mkdir -p BookingService/api
+RUN oapi-codegen -config BookingService/openapi/oapi-codegen.yaml BookingService/openapi/openapi.yaml
+
+COPY BookingService/ ./BookingService/
+
+RUN go build -o booking-service ./BookingService
+
+FROM alpine
+RUN apk --no-cache add ca-certificates
+WORKDIR /root/
+COPY --from=builder /app/booking-service .
+EXPOSE 8080
+CMD ["./booking-service"]

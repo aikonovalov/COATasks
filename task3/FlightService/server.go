@@ -24,7 +24,30 @@ type FlightServiceServer struct {
 }
 
 func (s *FlightServiceServer) SearchFlights(ctx context.Context, req *pb.SearchFlightsRequest) (*pb.SearchFlightsResponse, error) {
-    rows, err := s.db.QueryContext(ctx, "SELECT id, airline, flight_number, origin, destination, departure_time, arrival_time, total_seats, available_seats, price, status FROM flights WHERE origin = $1 AND destination = $2 AND departure_date = $3", req.Route.Origin, req.Route.Destination, req.DepartureDate)
+	if req.GetRoute() == nil {
+		return nil, status.Errorf(codes.InvalidArgument, "route is required")
+	}
+
+	var rows *sql.Rows
+	var err error
+	if req.GetDepartureDate() != nil {
+		dd := req.DepartureDate.AsTime()
+		departureDate := time.Date(dd.Year(), dd.Month(), dd.Day(), 0, 0, 0, 0, time.UTC)
+		rows, err = s.db.QueryContext(
+			ctx,
+			"SELECT id, airline, flight_number, origin, destination, departure_time, arrival_time, total_seats, available_seats, price, status FROM flights WHERE origin = $1 AND destination = $2 AND departure_date = $3",
+			req.Route.Origin,
+			req.Route.Destination,
+			departureDate,
+		)
+	} else {
+		rows, err = s.db.QueryContext(
+			ctx,
+			"SELECT id, airline, flight_number, origin, destination, departure_time, arrival_time, total_seats, available_seats, price, status FROM flights WHERE origin = $1 AND destination = $2",
+			req.Route.Origin,
+			req.Route.Destination,
+		)
+	}
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "failed to search flights: %v", err)
 	}
@@ -36,8 +59,10 @@ func (s *FlightServiceServer) SearchFlights(ctx context.Context, req *pb.SearchF
 		var origin string
 		var destination string
 		var flightStatus string
+		var departureTime time.Time
+		var arrivalTime time.Time
 
-		err := rows.Scan(&flight.Id, &flight.Airline, &flight.FlightNumber, &origin, &destination, &flight.DepartureTime, &flight.ArrivalTime, &flight.TotalSeats, &flight.AvailableSeats, &flight.Price, &flightStatus)
+		err := rows.Scan(&flight.Id, &flight.Airline, &flight.FlightNumber, &origin, &destination, &departureTime, &arrivalTime, &flight.TotalSeats, &flight.AvailableSeats, &flight.Price, &flightStatus)
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "failed to scan flight: %v", err)
 		}
@@ -45,6 +70,14 @@ func (s *FlightServiceServer) SearchFlights(ctx context.Context, req *pb.SearchF
 		flight.Route = &pb.FlightRoute{
 			Origin: origin,
 			Destination: destination,
+		}
+
+		flight.DepartureTime = timestamppb.New(departureTime)
+		flight.ArrivalTime = timestamppb.New(arrivalTime)
+		if v, ok := pb.FlightStatus_value[flightStatus]; ok {
+			flight.Status = pb.FlightStatus(v)
+		} else {
+			flight.Status = pb.FlightStatus_FLIGHT_STATUS_UNSPECIFIED
 		}
 
 		flights = append(flights, &flight)
@@ -67,8 +100,10 @@ func (s *FlightServiceServer) GetFlight(ctx context.Context, req *pb.GetFlightRe
 		var origin string
 		var destination string
 		var flightStatus string
+		var departureTime time.Time
+		var arrivalTime time.Time
 
-		err := rows.Scan(&flight.Id, &flight.Airline, &flight.FlightNumber, &origin, &destination, &flight.DepartureTime, &flight.ArrivalTime, &flight.TotalSeats, &flight.AvailableSeats, &flight.Price, &flightStatus)
+		err := rows.Scan(&flight.Id, &flight.Airline, &flight.FlightNumber, &origin, &destination, &departureTime, &arrivalTime, &flight.TotalSeats, &flight.AvailableSeats, &flight.Price, &flightStatus)
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "failed to scan flight: %v", err)
 		}
@@ -76,6 +111,14 @@ func (s *FlightServiceServer) GetFlight(ctx context.Context, req *pb.GetFlightRe
 		flight.Route = &pb.FlightRoute{
 			Origin: origin,
 			Destination: destination,
+		}
+
+		flight.DepartureTime = timestamppb.New(departureTime)
+		flight.ArrivalTime = timestamppb.New(arrivalTime)
+		if v, ok := pb.FlightStatus_value[flightStatus]; ok {
+			flight.Status = pb.FlightStatus(v)
+		} else {
+			flight.Status = pb.FlightStatus_FLIGHT_STATUS_UNSPECIFIED
 		}
 
 		return &pb.GetFlightResponse{
