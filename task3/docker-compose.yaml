@@ -1,0 +1,159 @@
+networks:
+  default:
+    driver: bridge
+  redis-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+services:
+  proto-gen:
+    image: "namely/protoc-all:latest"
+    volumes:
+      - ./proto:/proto
+      - ./gen:/gen
+    command: -d /proto -l go -o /gen --go-source-relative
+
+  flight-db:
+    image: postgres:15
+    environment:
+      - POSTGRES_DB=flight_service
+      - POSTGRES_USER=flight_user
+      - POSTGRES_PASSWORD=flight_pass
+    volumes:
+      - ./FlightService/db_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flight_user -d flight_service"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  flight-migrations:
+    image: flyway/flyway:9
+    command: migrate
+    volumes:
+      - ./FlightService/migrations:/flyway/sql
+    environment:
+      FLYWAY_URL: jdbc:postgresql://flight-db:5432/flight_service
+      FLYWAY_USER: flight_user
+      FLYWAY_PASSWORD: flight_pass
+    depends_on:
+      flight-db:
+        condition: service_healthy
+
+  flight-service:
+    build:
+      context: .
+      dockerfile: FlightService/DockerFile
+    ports:
+      - "8080:8080"
+    networks:
+      - default
+      - redis-net
+    environment:
+      DB_HOST: flight-db
+      DB_PORT: 5432
+      DB_NAME: flight_service
+      DB_USER: flight_user
+      DB_PASSWORD: flight_pass
+      FLIGHT_API_KEY: flight-api-key
+      REDIS_MASTER_NAME: my_master
+      REDIS_SENTINEL_ADDRS: redis-sentinel:26379
+    depends_on:
+      flight-migrations:
+        condition: service_completed_successfully
+      redis-sentinel:
+        condition: service_healthy
+
+  booking-db:
+    image: postgres:15
+    environment:
+      - POSTGRES_DB=booking_service
+      - POSTGRES_USER=booking_user
+      - POSTGRES_PASSWORD=booking_pass
+    volumes:
+      - ./BookingService/db_data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U booking_user -d booking_service"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  booking-migrations:
+    image: flyway/flyway:9
+    command: migrate
+    volumes:
+      - ./BookingService/migrations:/flyway/sql
+    environment:
+      FLYWAY_URL: jdbc:postgresql://booking-db:5432/booking_service
+      FLYWAY_USER: booking_user
+      FLYWAY_PASSWORD: booking_pass
+    depends_on:
+      booking-db:
+        condition: service_healthy
+
+  booking-service:
+    build:
+      context: .
+      dockerfile: BookingService/DockerFile
+    ports:
+      - "8081:8080"
+    environment:
+      DB_HOST: booking-db
+      DB_PORT: 5432
+      DB_NAME: booking_service
+      DB_USER: booking_user
+      DB_PASSWORD: booking_pass
+      FLIGHT_API_KEY: flight-api-key
+      CIRCUIT_BREAKER_THRESHOLD: "5"
+      CIRCUIT_BREAKER_OPEN_DURATION: 10s
+    depends_on:
+      booking-migrations:
+        condition: service_completed_successfully
+
+  redis-master:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server
+    ports:
+      - "6379:6379"
+    networks:
+      redis-net:
+        ipv4_address: 172.28.0.2
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+  redis-replica:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --replicaof redis-master 6379
+    networks:
+      - redis-net
+    depends_on:
+      redis-master:
+        condition: service_healthy
+  redis-sentinel:
+    networks:
+      - redis-net
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: sh -c "cp /etc/redis/sentinel.conf /tmp/sentinel.conf && redis-sentinel /tmp/sentinel.conf"
+    volumes:
+      - ./redis/sentinel.conf:/etc/redis/sentinel.conf:ro
+    ports:
+      - "26379:26379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "26379", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    depends_on:
+      redis-master:
+        condition: service_healthy
