@@ -15,6 +15,7 @@ import (
 	"movie/aggregator/internal/api"
 	"movie/aggregator/internal/config"
 	"movie/aggregator/internal/metrics"
+	"movie/aggregator/internal/s3export"
 	"movie/aggregator/internal/store"
 )
 
@@ -43,7 +44,19 @@ func main() {
 
 	defer pg.Close()
 
-	svc := metrics.NewService(cfg.ClickHouseURL, pg)
+	var exp *s3export.Exporter
+	if cfg.S3Enabled {
+		var err error
+		exp, err = s3export.New(cfg.S3Endpoint, cfg.S3Region, cfg.S3AccessKey, cfg.S3SecretKey, cfg.S3Bucket, pg)
+		if err != nil {
+			slog.Error("s3 client init", "err", err)
+			os.Exit(1)
+		}
+
+		slog.Info("s3 export enabled", "endpoint", cfg.S3Endpoint, "bucket", cfg.S3Bucket)
+	}
+
+	svc := metrics.NewService(cfg.ClickHouseURL, pg, exp)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()

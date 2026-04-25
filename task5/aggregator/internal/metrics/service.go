@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"movie/aggregator/internal/s3export"
 	"movie/aggregator/internal/store"
 )
 
@@ -33,16 +34,17 @@ type Service struct {
 	chURL string
 	http  *http.Client
 	pg    *store.Postgres
+	exp   *s3export.Exporter
 }
 
-func NewService(chURL string, pg *store.Postgres) *Service {
-	return &Service{chURL: chURL, http: &http.Client{}, pg: pg}
+func NewService(chURL string, pg *store.Postgres, exp *s3export.Exporter) *Service {
+	return &Service{chURL: chURL, http: &http.Client{}, pg: pg, exp: exp}
 }
 
 func (s *Service) RunFor(ctx context.Context, date time.Time) error {
 	d := date.Format("2006-01-02")
 	start := time.Now()
-	slog.Info("aggregation started", "date", d)
+	slog.Info("чтение сырых событий из ClickHouse и агрегация", "date", d)
 
 	res, err := s.compute(ctx, d)
 	if err != nil {
@@ -57,15 +59,31 @@ func (s *Service) RunFor(ctx context.Context, date time.Time) error {
 		return fmt.Errorf("store postgres: %w", err)
 	}
 
-	slog.Info("aggregation done",
+	elapsed := time.Since(start)
+	slog.Info(fmt.Sprintf("Цикл завершён, обработано %d записей за %.2f сек", res.TotalEvents, elapsed.Seconds()))
+	slog.Info("детали агрегации",
 		"date", d,
-		"total_events", res.TotalEvents,
 		"dau", res.DAU,
 		"conversion", fmt.Sprintf("%.3f", res.Conversion),
 		"retention_d1", fmt.Sprintf("%.3f", res.RetentionD1),
-		"elapsed_ms", time.Since(start).Milliseconds())
-	
+		"upsert", "postgres daily_metrics",
+	)
+
+	if s.exp != nil {
+		if err := s.exp.ExportDate(ctx, res.Date); err != nil {
+			slog.Warn("экспорт в S3 не выполнен, повтор при следующем запуске", "err", err)
+		}
+	}
+
 	return nil
+}
+
+func (s *Service) ExportToS3(ctx context.Context, date time.Time) error {
+	if s.exp == nil {
+		return fmt.Errorf("S3 export disabled (set S3_EXPORT_ENABLED=true)")
+	}
+
+	return s.exp.ExportDate(ctx, date)
 }
 
 func (s *Service) compute(_ context.Context, date string) (*DailyResult, error) {
