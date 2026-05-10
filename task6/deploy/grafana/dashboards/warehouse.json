@@ -1,0 +1,51 @@
+{
+  "title": "Warehouse consumer",
+  "uid": "wh-cons",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Consumer lag by partition",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "consumer_lag",
+          "legendFormat": "p{{partition}}",
+          "refId": "A"
+        }
+      ],
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": {}, "overrides": [] }
+    },
+    {
+      "type": "timeseries",
+      "title": "Throughput (events/s)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "expr": "sum(rate(events_processed_total[1m]))",
+          "legendFormat": "eps",
+          "refId": "A"
+        }
+      ],
+      "datasource": { "type": "prometheus", "uid": "prometheus" }
+    },
+    {
+      "type": "timeseries",
+      "title": "Cassandra write errors",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        {
+          "expr": "rate(cassandra_write_errors_total[1m])",
+          "legendFormat": "errors/s",
+          "refId": "A"
+        }
+      ],
+      "datasource": { "type": "prometheus", "uid": "prometheus" }
+    }
+  ],
+  "time": { "from": "now-15m", "to": "now" }
+}

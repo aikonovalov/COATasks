@@ -1,0 +1,37 @@
+{
+  "type": "record",
+  "name": "WarehouseEvent",
+  "namespace": "com.warehouse.events",
+  "fields": [
+    { "name": "event_id", "type": "string" },
+    { "name": "event_type", "type": "string" },
+    { "name": "occurred_at", "type": { "type": "long", "logicalType": "timestamp-millis" } },
+    { "name": "product_id", "type": ["null", "string"], "default": null },
+    { "name": "zone_id", "type": ["null", "string"], "default": null },
+    { "name": "from_zone_id", "type": ["null", "string"], "default": null },
+    { "name": "to_zone_id", "type": ["null", "string"], "default": null },
+    { "name": "quantity", "type": ["null", "int"], "default": null },
+    { "name": "counted_quantity", "type": ["null", "int"], "default": null },
+    { "name": "order_id", "type": ["null", "string"], "default": null },
+    {
+      "name": "order_lines",
+      "type": [
+        "null",
+        {
+          "type": "array",
+          "items": {
+            "type": "record",
+            "name": "OrderLine",
+            "fields": [
+              { "name": "product_id", "type": "string" },
+              { "name": "zone_id", "type": "string" },
+              { "name": "quantity", "type": "int" }
+            ]
+          }
+        }
+      ],
+      "default": null
+    },
+    { "name": "supplier_id", "type": ["null", "string"], "default": null }
+  ]
+}

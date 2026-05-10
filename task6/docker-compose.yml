@@ -1,0 +1,182 @@
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    depends_on:
+      - zookeeper
+    ports:
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+
+  kafka-init:
+    image: confluentinc/cp-kafka:7.6.0
+    depends_on:
+      - kafka
+    entrypoint: ["/bin/bash", "-c"]
+    command: |
+      set -e
+      for i in $$(seq 1 90); do
+        kafka-broker-api-versions --bootstrap-server kafka:9092 >/dev/null 2>&1 && break
+        sleep 2
+      done
+      kafka-topics --create --if-not-exists --topic warehouse-events --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1
+      kafka-topics --create --if-not-exists --topic warehouse-events-dlq --bootstrap-server kafka:9092 --partitions 1 --replication-factor 1
+    restart: "no"
+
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.6.0
+    depends_on:
+      - kafka
+      - kafka-init
+    ports:
+      - "8081:8081"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: kafka:9092
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+      SCHEMA_REGISTRY_SCHEMA_COMPATIBILITY_CONFIG: BACKWARD
+
+  cassandra-1:
+    image: cassandra:4.1
+    hostname: cassandra-1
+    ports:
+      - "9042:9042"
+    environment:
+      CASSANDRA_CLUSTER_NAME: warehouse
+      CASSANDRA_SEEDS: cassandra-1,cassandra-2,cassandra-3
+      CASSANDRA_DC: datacenter1
+      CASSANDRA_RACK: rack1
+      MAX_HEAP_SIZE: 512M
+      HEAP_NEWSIZE: 128M
+    volumes:
+      - cdata1:/var/lib/cassandra
+    healthcheck:
+      test: ["CMD-SHELL", "nodetool status | grep -q UN || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 90s
+
+  cassandra-2:
+    image: cassandra:4.1
+    hostname: cassandra-2
+    depends_on:
+      cassandra-1:
+        condition: service_healthy
+    environment:
+      CASSANDRA_CLUSTER_NAME: warehouse
+      CASSANDRA_SEEDS: cassandra-1,cassandra-2,cassandra-3
+      CASSANDRA_DC: datacenter1
+      CASSANDRA_RACK: rack1
+      MAX_HEAP_SIZE: 512M
+      HEAP_NEWSIZE: 128M
+    volumes:
+      - cdata2:/var/lib/cassandra
+    healthcheck:
+      test: ["CMD-SHELL", "nodetool status | grep -q UN || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 120s
+
+  cassandra-3:
+    image: cassandra:4.1
+    hostname: cassandra-3
+    depends_on:
+      cassandra-2:
+        condition: service_healthy
+    environment:
+      CASSANDRA_CLUSTER_NAME: warehouse
+      CASSANDRA_SEEDS: cassandra-1,cassandra-2,cassandra-3
+      CASSANDRA_DC: datacenter1
+      CASSANDRA_RACK: rack1
+      MAX_HEAP_SIZE: 512M
+      HEAP_NEWSIZE: 128M
+    volumes:
+      - cdata3:/var/lib/cassandra
+    healthcheck:
+      test: ["CMD-SHELL", "nodetool status | grep -q UN || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 120s
+
+  schema-init:
+    build:
+      context: .
+      dockerfile: Dockerfile.producer
+    depends_on:
+      schema-registry:
+        condition: service_started
+    environment:
+      SCHEMA_REGISTRY: http://schema-registry:8081
+    entrypoint: ["/bin/sh", "-c", "sleep 25 && /app/producer register"]
+    restart: "no"
+
+  warehouse-consumer:
+    build:
+      context: .
+      dockerfile: Dockerfile.consumer
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      schema-init:
+        condition: service_completed_successfully
+      cassandra-3:
+        condition: service_healthy
+    ports:
+      - "9080:9080"
+    environment:
+      KAFKA_BROKERS: kafka:9092
+      SCHEMA_REGISTRY: http://schema-registry:8081
+      CASSANDRA_HOSTS: cassandra-1,cassandra-2,cassandra-3
+      KAFKA_START: first
+      KAFKA_TOPIC: warehouse-events
+      KAFKA_DLQ: warehouse-events-dlq
+
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    depends_on:
+      - warehouse-consumer
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./deploy/alerts.yml:/etc/prometheus/alerts.yml
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+
+  grafana:
+    image: grafana/grafana:11.0.0
+    depends_on:
+      - prometheus
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_DEFAULT_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards
+
+volumes:
+  cdata1: {}
+  cdata2: {}
+  cdata3: {}
