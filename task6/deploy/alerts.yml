@@ -1,0 +1,10 @@
+groups:
+  - name: warehouse
+    rules:
+      - alert: ConsumerLagHigh
+        expr: consumer_lag > 50
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: consumer_lag above 50 on a partition

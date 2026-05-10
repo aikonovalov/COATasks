@@ -1,0 +1,123 @@
+{
+  "annotations": { "list": [] },
+  "description": "Cinema Dashboard",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "id": 1,
+      "title": "Retention Cohort Heatmap",
+      "type": "table",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse_ds" },
+          "refId": "A",
+          "rawSql": "SELECT toString(cohort_date) AS \"Cohort\", d0 AS \"Users\", 100 AS \"Day 0\", if(d0>0, round(100.0*d1/d0,1), 0) AS \"Day 1\", if(d0>0, round(100.0*d2/d0,1), 0) AS \"Day 2\", if(d0>0, round(100.0*d3/d0,1), 0) AS \"Day 3\", if(d0>0, round(100.0*d4/d0,1), 0) AS \"Day 4\", if(d0>0, round(100.0*d5/d0,1), 0) AS \"Day 5\", if(d0>0, round(100.0*d6/d0,1), 0) AS \"Day 6\", if(d0>0, round(100.0*d7/d0,1), 0) AS \"Day 7\" FROM (SELECT cohort_date, uniqIf(user_id, day_num=0) AS d0, uniqIf(user_id, day_num=1) AS d1, uniqIf(user_id, day_num=2) AS d2, uniqIf(user_id, day_num=3) AS d3, uniqIf(user_id, day_num=4) AS d4, uniqIf(user_id, day_num=5) AS d5, uniqIf(user_id, day_num=6) AS d6, uniqIf(user_id, day_num=7) AS d7 FROM (SELECT e.user_id, c.first_date AS cohort_date, dateDiff('day', c.first_date, toDate(e.timestamp)) AS day_num FROM movie_events e INNER JOIN (SELECT user_id, min(toDate(timestamp)) AS first_date FROM movie_events GROUP BY user_id) c ON e.user_id = c.user_id WHERE dateDiff('day', c.first_date, toDate(e.timestamp)) BETWEEN 0 AND 7) GROUP BY cohort_date) ORDER BY cohort_date DESC LIMIT 30",
+          "format": 1
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "rgb(220,53,69)", "value": 0 },
+              { "color": "rgb(255,193,7)", "value": 15 },
+              { "color": "rgb(25,135,84)", "value": 40 }
+            ]
+          },
+          "custom": {
+            "align": "center",
+            "cellOptions": { "type": "color-background", "mode": "gradient" }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byRegexp", "options": "Cohort|Users" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "type": "auto" } },
+              { "id": "custom.align", "value": "left" }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Users" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "text" } }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "sortBy": [{ "displayName": "Cohort", "desc": true }],
+        "footer": { "show": false }
+      }
+    },
+    {
+      "id": 2,
+      "title": "DAU",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
+      "targets": [
+        {
+          "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse_ds" },
+          "refId": "A",
+          "rawSql": "SELECT toDateTime(date) AS time, toUInt64(dau) AS DAU FROM agg_dau WHERE $__dateFilter(date) ORDER BY time",
+          "format": 0
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 15, "pointSize": 5, "showPoints": "always" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": { "mode": "single" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      }
+    },
+    {
+      "id": 5,
+      "title": "Top 10 Movies",
+      "type": "barchart",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 18 },
+      "targets": [
+        {
+          "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse_ds" },
+          "refId": "A",
+          "rawSql": "SELECT movie_id, toUInt64(views) AS Views FROM agg_top_movies WHERE date = (SELECT max(date) FROM agg_top_movies) ORDER BY rank ASC LIMIT 10",
+          "format": 1
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 1 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "xField": "movie_id",
+        "orientation": "horizontal",
+        "tooltip": { "mode": "single" },
+        "legend": { "displayMode": "hidden" }
+      }
+    }
+  ],
+  "refresh": "1m",
+  "schemaVersion": 38,
+  "tags": ["cinema", "analytics"],
+  "time": { "from": "now-30d", "to": "now" },
+  "timepicker": {},
+  "timezone": "UTC",
+  "title": "Cinema Analytics",
+  "uid": "cinema_analytics",
+  "version": 1,
+  "weekStart": ""
+}
